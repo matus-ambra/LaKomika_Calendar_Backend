@@ -139,14 +139,14 @@ db.serialize(() => {
 
   // Insert default users if they don't exist
   db.get("SELECT COUNT(*) as count FROM users WHERE role = 'admin'", (err, row) => {
-    if (row.count === 0) {
+    if (row && row.count === 0) {
       const adminPassword = bcrypt.hashSync('admin123', 10);
       db.run("INSERT INTO users (role, password) VALUES ('admin', ?)", [adminPassword]);
     }
   });
 
   db.get("SELECT COUNT(*) as count FROM users WHERE role = 'worker'", (err, row) => {
-    if (row.count === 0) {
+    if (row && row.count === 0) {
       const workerPassword = bcrypt.hashSync('worker123', 10);
       db.run("INSERT INTO users (role, password) VALUES ('worker', ?)", [workerPassword]);
     }
@@ -235,100 +235,7 @@ app.delete('/api/admin/workers/:id', authenticateToken, (req, res) => {
   });
 });
 
-app.get('/api/admin/calendar-labels', authenticateToken, (req, res) => {
-  if (req.user.role !== 'admin') {
-    return res.status(403).json({ error: 'Admin access required' });
-  }
-
-  db.all("SELECT * FROM calendar_labels ORDER BY date", (err, labels) => {
-    if (err) {
-      return res.status(500).json({ error: 'Database error' });
-    }
-    res.json(labels);
-  });
-});
-
-app.post('/api/admin/calendar-labels', authenticateToken, (req, res) => {
-  if (req.user.role !== 'admin') {
-    return res.status(403).json({ error: 'Admin access required' });
-  }
-
-  const { date, label, workers_needed } = req.body;
-  db.run("INSERT INTO calendar_labels (date, label, workers_needed) VALUES (?, ?, ?)", 
-    [date, label, workers_needed], function(err) {
-    if (err) {
-      return res.status(500).json({ error: 'Database error' });
-    }
-    res.json({ id: this.lastID, date, label, workers_needed });
-  });
-});
-
-// Shared route for calendar data with assignments
-app.get('/api/calendar-data', authenticateToken, (req, res) => {
-  const query = `
-    SELECT 
-      cl.*,
-      COUNT(wa.id) as assigned_workers,
-      GROUP_CONCAT(w.name) as assigned_worker_names,
-      GROUP_CONCAT(w.color) as assigned_worker_colors
-    FROM calendar_labels cl
-    LEFT JOIN worker_assignments wa ON cl.id = wa.calendar_label_id
-    LEFT JOIN workers w ON wa.worker_id = w.id
-    GROUP BY cl.id
-    ORDER BY cl.date
-  `;
-
-  db.all(query, (err, calendar_data) => {
-    if (err) {
-      return res.status(500).json({ error: 'Database error' });
-    }
-    
-    // Parse assigned worker names and colors from comma-separated strings to arrays
-    const formattedData = calendar_data.map(item => {
-      const workerNames = item.assigned_worker_names ? item.assigned_worker_names.split(',') : [];
-      const workerColors = item.assigned_worker_colors ? item.assigned_worker_colors.split(',') : [];
-      
-      const workers = workerNames.map((name, index) => ({
-        name,
-        color: workerColors[index] || '#999999'
-      }));
-      
-      return {
-        ...item,
-        assigned_workers: item.assigned_workers || 0,
-        workers
-      };
-    });
-    
-    res.json(formattedData);
-  });
-});
-
-// Worker routes
-app.get('/api/worker/available-slots', authenticateToken, (req, res) => {
-  if (req.user.role !== 'worker') {
-    return res.status(403).json({ error: 'Worker access required' });
-  }
-
-  const query = `
-    SELECT 
-      cl.*,
-      COUNT(wa.id) as assigned_workers
-    FROM calendar_labels cl
-    LEFT JOIN worker_assignments wa ON cl.id = wa.calendar_label_id
-    GROUP BY cl.id
-    HAVING assigned_workers < cl.workers_needed
-    ORDER BY cl.date
-  `;
-
-  db.all(query, (err, slots) => {
-    if (err) {
-      return res.status(500).json({ error: 'Database error' });
-    }
-    res.json(slots);
-  });
-});
-
+// Get workers
 app.get('/api/workers', authenticateToken, (req, res) => {
   db.all("SELECT * FROM workers ORDER BY name", (err, workers) => {
     if (err) {
@@ -338,11 +245,9 @@ app.get('/api/workers', authenticateToken, (req, res) => {
   });
 });
 
-// Simplified endpoints for Slovak version compatibility
 // Get month data in the format expected by the frontend
 app.get('/api/month/:yearMonth', authenticateToken, (req, res) => {
   const { yearMonth } = req.params;
-  const [year, month] = yearMonth.split('-').map(Number);
   
   console.log(`Loading month data for: ${yearMonth}`);
   
@@ -564,77 +469,6 @@ app.post('/api/workers-colors', authenticateToken, (req, res) => {
   });
 });
 
-app.post('/api/worker/assign', authenticateToken, (req, res) => {
-  if (req.user.role !== 'worker') {
-    return res.status(403).json({ error: 'Worker access required' });
-  }
-
-  const { calendar_label_id, worker_id } = req.body;
-  
-  // Check if slot is still available
-  const checkQuery = `
-    SELECT 
-      cl.workers_needed,
-      COUNT(wa.id) as assigned_workers
-    FROM calendar_labels cl
-    LEFT JOIN worker_assignments wa ON cl.id = wa.calendar_label_id
-    WHERE cl.id = ?
-    GROUP BY cl.id
-  `;
-
-  db.get(checkQuery, [calendar_label_id], (err, slot) => {
-    if (err) {
-      return res.status(500).json({ error: 'Database error' });
-    }
-
-    if (!slot || slot.assigned_workers >= slot.workers_needed) {
-      return res.status(400).json({ error: 'Slot is full' });
-    }
-
-    db.run("INSERT INTO worker_assignments (calendar_label_id, worker_id) VALUES (?, ?)", 
-      [calendar_label_id, worker_id], function(err) {
-      if (err) {
-        return res.status(500).json({ error: 'Database error' });
-      }
-      res.json({ id: this.lastID, calendar_label_id, worker_id });
-    });
-  });
-});
-
-// Get worker schedule for calendar export
-app.get('/api/worker-schedule/:workerName/:yearMonth', authenticateToken, (req, res) => {
-  const { workerName, yearMonth } = req.params;
-  
-  // Allow both workers and admins to access worker schedules
-  if (req.user.role !== 'worker' && req.user.role !== 'admin') {
-    return res.status(403).json({ error: 'Access denied' });
-  }
-  
-  console.log(`Fetching schedule for worker: ${workerName}, month: ${yearMonth}`);
-  
-  const query = `
-    SELECT 
-      cl.date,
-      cl.label,
-      cl.workers_needed
-    FROM calendar_labels cl
-    JOIN worker_assignments wa ON cl.id = wa.calendar_label_id
-    JOIN workers w ON wa.worker_id = w.id
-    WHERE w.name = ? AND substr(cl.date, 1, 7) = ?
-    ORDER BY cl.date
-  `;
-  
-  db.all(query, [workerName, yearMonth], (err, assignments) => {
-    if (err) {
-      console.error('Error fetching worker schedule:', err);
-      return res.status(500).json({ error: 'Database error' });
-    }
-    
-    console.log(`Found ${assignments.length} assignments for ${workerName} in ${yearMonth}`);
-    res.json(assignments);
-  });
-});
-
 // Actors management endpoints
 app.get('/api/actors', authenticateToken, (req, res) => {
   if (req.user.role !== 'admin') {
@@ -760,73 +594,6 @@ app.get('/api/actor-availability', authenticateToken, (req, res) => {
     return res.status(403).json({ error: 'Admin access required' });
   }
   res.json({});
-});
-
-// Planned plays endpoints
-app.get('/api/planned-plays/:yearMonth', authenticateToken, (req, res) => {
-  const { yearMonth } = req.params;
-  const yearMonthPattern = `${yearMonth}-%`;
-  
-  db.all(
-    "SELECT date, play_id, play_name FROM planned_plays WHERE date LIKE ?",
-    [yearMonthPattern],
-    (err, rows) => {
-      if (err) {
-        console.error('Error loading planned plays:', err);
-        return res.status(500).json({ error: 'Database error' });
-      }
-      
-      const plannedPlays = {};
-      rows.forEach(row => {
-        plannedPlays[row.date] = {
-          playId: row.play_id,
-          playName: row.play_name
-        };
-      });
-      
-      res.json(plannedPlays);
-    }
-  );
-});
-
-app.post('/api/planned-plays', authenticateToken, (req, res) => {
-  if (req.user.role !== 'admin') {
-    return res.status(403).json({ error: 'Admin access required' });
-  }
-  
-  const { date, playId, playName } = req.body;
-  
-  db.run(
-    "INSERT OR REPLACE INTO planned_plays (date, play_id, play_name) VALUES (?, ?, ?)",
-    [date, playId, playName],
-    function(err) {
-      if (err) {
-        console.error('Error saving planned play:', err);
-        return res.status(500).json({ error: 'Database error' });
-      }
-      res.json({ success: true });
-    }
-  );
-});
-
-app.delete('/api/planned-plays/:date', authenticateToken, (req, res) => {
-  if (req.user.role !== 'admin') {
-    return res.status(403).json({ error: 'Admin access required' });
-  }
-  
-  const { date } = req.params;
-  
-  db.run(
-    "DELETE FROM planned_plays WHERE date = ?",
-    [date],
-    function(err) {
-      if (err) {
-        console.error('Error deleting planned play:', err);
-        return res.status(500).json({ error: 'Database error' });
-      }
-      res.json({ success: true });
-    }
-  );
 });
 
 app.listen(PORT, () => {
