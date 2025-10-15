@@ -14,11 +14,11 @@ const PORT = process.env.PORT || 3001;
 const JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key';
 
 // Middleware
-   const allowedOrigins = [
-     'http://localhost:3000', // Local development
-     'https://la-komika-calendar.netlify.app', // Production frontend URL
-     process.env.FRONTEND_URL, // Additional frontend URL from env
-   ].filter(Boolean); // Remove any undefined values
+const allowedOrigins = [
+  'http://localhost:3000', // Local development
+  'https://la-komika-calendar.netlify.app', // Production frontend URL
+  process.env.FRONTEND_URL, // Additional frontend URL from env
+].filter(Boolean); // Remove any undefined values
 
 app.use(cors({
   origin: function (origin, callback) {
@@ -832,4 +832,3 @@ app.delete('/api/planned-plays/:date', authenticateToken, (req, res) => {
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
-
