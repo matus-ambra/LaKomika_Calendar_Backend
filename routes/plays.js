@@ -4,7 +4,7 @@ const sqlite3 = require('sqlite3').verbose();
 const path = require('path');
 const jwt = require('jsonwebtoken');
 
-const dbPath = path.join(__dirname, '..', 'theater.db');
+const dbPath = path.join(__dirname, '..', 'scheduler.db');
 
 // Middleware to verify JWT token
 const authenticateToken = (req, res, next) => {
@@ -302,5 +302,6 @@ router.delete('/:id', authenticateToken, (req, res) => {
     stmt.finalize();
   });
 });
+
 
 module.exports = router;
